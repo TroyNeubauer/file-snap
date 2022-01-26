@@ -1,15 +1,18 @@
 #[macro_use]
 extern crate rocket;
 
-pub mod error;
+mod error;
+mod util;
+
+pub use error::*;
 
 use std::path::PathBuf;
 
-use error::*;
 use log::warn;
-use rocket::{http::uri::Uri, State};
+use rocket::State;
+use serde::Serialize;
 
-struct Config {
+pub struct Config {
     mount: PathBuf,
 }
 
@@ -18,42 +21,33 @@ fn hello() -> &'static str {
     "hello, world!"
 }
 
-#[get("/available/<unsanitized_req_path>")]
-async fn available(
+#[get("/read/<unsanitized_req_path>")]
+async fn read<'r>(
     unsanitized_req_path: &str,
     config: &State<Config>,
-) -> Result<Res<Vec<(String, &'static str)>>> {
+) -> Result<util::StreamedFile> {
+    let sanitized_path = util::sanitize_relative(unsanitized_req_path, config)?;
+
+    let file = tokio::fs::File::open(sanitized_path).await?;
+    Ok(util::StreamedFile(file))
+}
+
+#[derive(Serialize, Debug)]
+struct DirListing {
+    name: String,
+    kind: &'static str,
+}
+
+#[get("/list")]
+async fn list_no_param(config: &State<Config>) -> Result<Res<Vec<DirListing>>> {
+    list("", config).await
+}
+
+#[get("/list/<unsanitized_req_path>")]
+async fn list(unsanitized_req_path: &str, config: &State<Config>) -> Result<Res<Vec<DirListing>>> {
+    let sanitized_path = util::sanitize_relative(unsanitized_req_path, config)?;
+
     //TODO: Use memory cache of files to get listing faster
-    let unsanitized_uri =
-        Uri::parse_any(unsanitized_req_path).map_err(|e| Error::UrlDecode(e.to_string()))?;
-    info!("{:?}", unsanitized_uri);
-
-    // We need to make the absolute path the user gives a relative path so we can push it to the
-    // mount point
-    let mut tmp = String::from(".");
-    tmp.push_str(unsanitized_uri.to_string().as_str());
-
-    let unsanitized_path = PathBuf::from(tmp);
-    let unsanitized_path = config.mount.join(unsanitized_path);
-    //We need to canonicalize the path _before_ we check if it is within our mount point so that
-    //`../` and other nasty exploits are resolved.
-    let unsanitized_path = std::fs::canonicalize(unsanitized_path)?;
-    if !unsanitized_path
-        .as_path()
-        .starts_with(config.mount.as_path())
-    {
-        warn!("User requesting dirty path: {}", unsanitized_uri);
-        warn!("  Mount at: {}", config.mount.to_string_lossy());
-        warn!(
-            "  Would have read path: {}",
-            unsanitized_path.to_string_lossy()
-        );
-        return Err(Error::PathDenied(unsanitized_req_path.into()));
-    }
-    // The sanitized path starts with the mount point so it is safe to access
-    let sanitized_path = /* unsafe { */ unsanitized_path /* } */;
-    info!("Using sanitized path: {}", sanitized_path.to_string_lossy());
-
     let mut it = tokio::fs::read_dir(sanitized_path).await?;
     let mut result = Vec::new();
     while let Some(entry) = it.next_entry().await? {
@@ -68,8 +62,14 @@ async fn available(
                     //Symlink. Don't show
                     continue;
                 };
+                //Sanity check that we can access this path. Should never happen because we check
+                //for symlinks above
+                debug_assert!(util::sanitize_path(entry.path(), config).is_ok());
                 if let Some(s) = entry.file_name().to_str() {
-                    result.push((s.to_owned(), kind));
+                    result.push(DirListing {
+                        name: s.to_owned(),
+                        kind,
+                    });
                 }
             }
             Err(err) => {
@@ -88,16 +88,30 @@ fn rocket() -> _ {
     let mount = match std::env::var_os("MOUNT_POINT") {
         Some(mount) => mount,
         None => {
-            eprintln!("Environment variable `MOUNT_POINT` not set!");
-            error!("Environment variable `MOUNT_POINT` not set! Please set before running");
+            eprintln!("Environment variable `MOUNT_POINT` missing");
+            error!("Environment variable `MOUNT_POINT` is not set! Please set before running");
             std::process::exit(1);
         }
     };
-    let mount = std::fs::canonicalize(mount).expect("Failed to find absolute path for mount point");
-    info!("Using path: {}", mount.to_string_lossy());
+    let mount = std::fs::canonicalize(mount)
+        .expect("Failed to find absolute path for mount point. Does it exist?");
+
+    info!("Using mount point: {}", mount.to_string_lossy());
     let config = Config { mount };
     rocket::build()
         .mount("/", routes![hello])
-        .mount("/api/v1", routes![available])
+        .mount("/api/v1", routes![list, list_no_param, read])
         .manage(config)
 }
+
+/*
+
+// build.rs
+use std::env;
+
+pub fn main() {
+    if Ok("release".to_owned()) == env::var("PROFILE") {
+        panic!("I'm only panicking in release mode")
+    }
+}
+*/

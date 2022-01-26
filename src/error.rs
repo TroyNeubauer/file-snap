@@ -11,16 +11,20 @@ pub enum Error {
     #[error("i/o {0}")]
     Io(#[from] std::io::Error),
 
-    #[error("path denied {0}")]
-    PathDenied(String),
+    #[error("not found")]
+    PathDenied,
 
     #[error("failed to decode path {}: {0}")]
-    UrlDecode(String)
+    UrlDecode(String),
 }
 
-pub type Result<T> = std::result::Result<T, Error>;
+pub(crate) type Result<T> = std::result::Result<T, Error>;
 
-pub struct Res<T>(pub T);
+/// Wrapper type for a successful result.
+///
+/// Implements [`rocket::response::Responder`] so that successful results can be easily serialized
+/// as json
+pub(crate) struct Res<T>(pub T);
 
 impl<T> From<T> for Res<T> {
     fn from(t: T) -> Self {
@@ -29,7 +33,14 @@ impl<T> From<T> for Res<T> {
 }
 
 impl<'r> Responder<'r, 'static> for Error {
-    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
+    fn respond_to(mut self, _: &'r Request<'_>) -> response::Result<'static> {
+        if let Error::Io(io) = &self {
+            if io.kind() == std::io::ErrorKind::NotFound {
+                //Change all not found errors to path denied to obscure files that actually don't
+                //exist, and files that we don't allow users to access
+                self = Error::PathDenied;
+            }
+        }
         #[derive(Serialize)]
         struct ResponseInner {
             err: String,
@@ -84,44 +95,3 @@ where
         }
     }
 }
-
-/*
-impl<'r, T: MyStruct> Responder<'r, 'static> for T
-{
-    fn respond_to(self, _: &'r Request<'_>) -> response::Result<'static> {
-        #[derive(Serialize)]
-        struct ResponseInner<T: Serialize> {
-            ok: Option<T>,
-            err: Option<String>,
-        }
-
-        let inner = self.0.map_or_else(
-            |e| ResponseInner {
-                ok: None,
-                err: Some(e.to_string()),
-            },
-            |t| ResponseInner {
-                ok: Some(t),
-                err: None,
-            },
-        );
-
-        let (body, status) = match serde_json::to_string(&inner) {
-            Err(err) => {
-                error!(
-                    "Failed to encode json response for: {:?}, error: {}",
-                    self.0, err
-                );
-                return Err(Status::InternalServerError);
-            }
-            Ok(json) => (json, Status::Ok),
-        };
-
-        Response::build()
-            .sized_body(body.len(), Cursor::new(body.clone()))
-            .status(status)
-            .header(ContentType::JSON)
-            .ok()
-    }
-}
-*/
