@@ -103,15 +103,3 @@ fn rocket() -> _ {
         .mount("/api/v1", routes![list, list_no_param, read])
         .manage(config)
 }
-
-/*
-
-// build.rs
-use std::env;
-
-pub fn main() {
-    if Ok("release".to_owned()) == env::var("PROFILE") {
-        panic!("I'm only panicking in release mode")
-    }
-}
-*/
