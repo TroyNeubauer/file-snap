@@ -9,16 +9,11 @@ pub use error::*;
 use std::path::PathBuf;
 
 use log::warn;
-use rocket::State;
+use rocket::{http::Status, Request, Response, State};
 use serde::Serialize;
 
 pub struct Config {
     mount: PathBuf,
-}
-
-#[get("/")]
-fn hello() -> &'static str {
-    "hello, world!"
 }
 
 #[get("/read/<unsanitized_req_path>")]
@@ -80,6 +75,14 @@ async fn list(unsanitized_req_path: &str, config: &State<Config>) -> Result<Res<
     Ok(Res(result))
 }
 
+#[catch(404)]
+fn api_not_found(req: &Request) -> String {
+    format!(
+        "Api route not found. Check docs or try again.\nUri requested: {}",
+        req.uri()
+    )
+}
+
 #[launch]
 fn rocket() -> _ {
     let _ = dotenv::dotenv();
@@ -93,13 +96,15 @@ fn rocket() -> _ {
             std::process::exit(1);
         }
     };
+
     let mount = std::fs::canonicalize(mount)
         .expect("Failed to find absolute path for mount point. Does it exist?");
 
     info!("Using mount point: {}", mount.to_string_lossy());
     let config = Config { mount };
     rocket::build()
-        .mount("/", routes![hello])
         .mount("/api/v1", routes![list, list_no_param, read])
         .manage(config)
+        .mount(StaticFiles
+        .register("/api/v1", catchers![api_not_found])
 }

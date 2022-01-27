@@ -90,3 +90,11 @@ impl<'r> Responder<'r, 'static> for StreamedFile {
             .ok()
     }
 }
+
+pub struct EasyResponse(pub Response<'static>);
+
+impl<'r> Responder<'r, 'static> for EasyResponse {
+    fn respond_to(self, _: &Request) -> response::Result<'static> {
+        Ok(self.0)
+    }
+}

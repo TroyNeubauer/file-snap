@@ -3,6 +3,15 @@ name = "frontend"
 version = "0.1.0"
 edition = "2021"
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+name = "file_snap_frontend"
+
+[profile.release]
+#Optimize for size because we are wasm
+opt-level = 's'
+lto = true
+
 [dependencies]
 iced_web = "0.4"
 iced = { version = "0.3", features = ["tokio"] }
